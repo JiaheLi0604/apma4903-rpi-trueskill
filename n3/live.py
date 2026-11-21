@@ -28,5 +28,7 @@ cfA,cfB=closed_form(mu[ia],var[ia],wa,mu[ib],var[ib],wb,beta,h,won)
 mcA,mcB=monte_carlo(mu[ia],var[ia],wa,mu[ib],var[ib],wb,beta,h,won,N=3_000_000)
 d=lambda a,b: max(np.abs(a[0]-b[0]).max(),np.abs(np.sqrt(a[1])-np.sqrt(b[1])).max())
 print('max|MP-CF|',d(mpA,cfA),d(mpB,cfB)); print('max|MP-MC| (mu or sd)',d(mpA,mcA),d(mpB,mcB))
-for nm,m,v in log[:3]+[l for l in log if l[0].startswith(('sum->t','diff->d','d marginal','trunc'))]: print(f"  {nm:35s} mean={m:8.3f} sd={np.sqrt(v):.3f}")
+for entry in log:
+    if entry[0].startswith(('team', 'gap', 'news')):
+        print(f"  {entry[0]:40s} mean={entry[1]:8.3f} sd={np.sqrt(entry[2]):.3f}")
 pickle.dump(dict(i=i,ia=ia,wa=wa,ib=ib,wb=wb,mu=mu[np.r_[ia,ib]],var=var[np.r_[ia,ib]]),open('n3/live_state.pkl','wb'))

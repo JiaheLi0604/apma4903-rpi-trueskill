@@ -7,108 +7,220 @@ Model (one match, team A vs team B):
   result       1[d > 0]  (A won)                            truncation factor  (the only non-Gaussian one)
 Gaussians are stored in precision form: pi = 1/var, tau = mu/var.  Product = add, division = subtract.
 """
+import math
 import numpy as np
-from scipy.special import log_ndtr
+from scipy.special import log_ndtr, ndtr
 
-LOG_SQRT_2PI = 0.9189385332046727
+LOG_SQRT_2PI = 0.9189385332046727          # log of sqrt(2*pi)
 
-class G:
-    """A Gaussian in precision form."""
-    def __init__(s, pi=0.0, tau=0.0): s.pi, s.tau = float(pi), float(tau)
-    @staticmethod
-    def mv(mu, var): return G(1.0/var, mu/var)
-    @property
-    def mu(s): return s.tau/s.pi
-    @property
-    def var(s): return 1.0/s.pi
-    def __mul__(s, o): return G(s.pi+o.pi, s.tau+o.tau)        # product of Gaussians: precisions add
-    def __truediv__(s, o): return G(s.pi-o.pi, s.tau-o.tau)    # division: precisions subtract
-    def __repr__(s): return f"N(mean={s.mu:.4f}, sd={np.sqrt(s.var):.4f})"
 
 def VW(t):
-    v = float(np.exp(-0.5*t*t - LOG_SQRT_2PI - log_ndtr(t))); return v, v*(v+t)
+    """Nugget 2's functions.  V(t) = phi(t) / Phi(t),  W(t) = V(t) * (V(t) + t).
+    phi(t) / Phi(t) is computed as exp(log phi(t) - log Phi(t)), so it does not break for very negative t."""
+    log_phi = -0.5 * t * t - LOG_SQRT_2PI        # log of the standard normal PDF at t
+    log_Phi = log_ndtr(t)                         # log of the standard normal CDF at t
+    V = math.exp(log_phi - log_Phi)
+    W = V * (V + t)
+    return V, W
+
 
 def message_passing(muA, varA, wA, muB, varB, wB, beta, h=0.0, A_won=True, log=None):
-    """Return posterior (mu, var) for every player of A and B.  `log` (a list) collects every message."""
-    def L(name, g):
-        if log is not None: log.append((name, g.mu, g.var))
-        return g
-    b2 = beta*beta
-    if not A_won:                                         # relabel so that the winner is always 'A'
-        (mB2, vB2), (mA2, vA2) = message_passing(muB, varB, wB, muA, varA, wA, beta, -h, True, log)
-        return (mA2, vA2), (mB2, vB2)
-    teams = {"A": (np.asarray(muA,float), np.asarray(varA,float), np.asarray(wA,float)),
-             "B": (np.asarray(muB,float), np.asarray(varB,float), np.asarray(wB,float))}
-    # 1) prior factor -> skill;  2) skill -> performance (add beta^2)
-    prior, perf_down, team_down = {}, {}, {}
-    for k,(m,v,w) in teams.items():
-        prior[k] = [L(f"prior->s_{k}{i+1}", G.mv(m[i], v[i])) for i in range(len(m))]
-        perf_down[k] = [L(f"s_{k}{i+1}->p_{k}{i+1}", G.mv(g.mu, g.var+b2)) for i,g in enumerate(prior[k])]
-        # 3) weighted-sum factor -> team performance:  mean sum w*mu, var sum w^2*var
-        tm = sum(w[i]*perf_down[k][i].mu for i in range(len(m))) + (h if k=="A" else 0.0)
-        tv = sum(w[i]**2*perf_down[k][i].var for i in range(len(m)))
-        team_down[k] = L(f"sum->t_{k}", G.mv(tm, tv))
-    # 4) difference factor -> d
-    d_in = L("diff->d", G.mv(team_down["A"].mu-team_down["B"].mu, team_down["A"].var+team_down["B"].var))
-    # 5) truncation factor: moment-match the truncated marginal of d (uses V, W from Nugget 2)
-    c = np.sqrt(d_in.var); t = d_in.mu/c; V, W = VW(t)
-    d_post = L("d marginal (moment-matched)", G.mv(d_in.mu + c*V, d_in.var*(1-W)))
-    d_up = L("trunc->d (= marginal / incoming)", d_post / d_in)
-    # 6) difference factor -> team performances (going back up)
-    team_up = {"A": L("diff->t_A", G.mv(d_up.mu + team_down["B"].mu, d_up.var + team_down["B"].var)),
-               "B": L("diff->t_B", G.mv(team_down["A"].mu - d_up.mu, d_up.var + team_down["A"].var))}
-    out = {}
-    for k,(m,v,w) in teams.items():
-        tu = team_up[k]; base = tu.mu - (h if k=="A" else 0.0)
-        post_mu, post_var = [], []
-        for i in range(len(m)):
-            others_m = sum(w[j]*perf_down[k][j].mu for j in range(len(m)) if j!=i)
-            others_v = sum(w[j]**2*perf_down[k][j].var for j in range(len(m)) if j!=i)
-            # 7) weighted-sum factor -> p_i :  p_i = (t - sum_{j!=i} w_j p_j)/w_i
-            p_up = L(f"sum->p_{k}{i+1}", G.mv((base-others_m)/w[i], (tu.var+others_v)/w[i]**2))
-            # 8) performance -> skill (add beta^2);  9) posterior = prior x upward message
-            s_up = L(f"p_{k}{i+1}->s_{k}{i+1}", G.mv(p_up.mu, p_up.var+b2))
-            post = L(f"posterior s_{k}{i+1}", prior[k][i]*s_up)
-            post_mu.append(post.mu); post_var.append(post.var)
-        out[k] = (np.array(post_mu), np.array(post_var))
-    return out["A"], out["B"]
+    """Algorithm 1 (MessagePassing): one match.
+    Input : for each player of team A and team B: mean mu, variance var, weight w;
+            beta (performance noise); h (home term for team A: +home advantage if A is at home,
+            -home advantage if B is at home, 0 at a neutral site); A_won (True or False).
+    Output: (new means of A, new variances of A), (new means of B, new variances of B).
+    If `log` is a list, every message is added to it as (name, mean, variance), only for printing."""
+
+    beta2 = beta * beta
+
+    # ---- winner W and loser L, and the home term eta from the winner's side
+    if A_won:
+        names_W, names_L = "A", "B"
+        mu_W, var_W, w_W = list(muA), list(varA), list(wA)
+        mu_L, var_L, w_L = list(muB), list(varB), list(wB)
+        eta = h
+    else:
+        names_W, names_L = "B", "A"
+        mu_W, var_W, w_W = list(muB), list(varB), list(wB)
+        mu_L, var_L, w_L = list(muA), list(varA), list(wA)
+        eta = -h
+
+    # ================= DOWN: predict the gap =================
+    # line 1: a_i = w_i * mu_i,  b_i = w_i^2 * (sigma_i^2 + beta^2);  mu_T = sum of a_i,  v_T = sum of b_i
+    a_W = []
+    b_W = []
+    for i in range(len(mu_W)):
+        a_W.append(w_W[i] * mu_W[i])
+        b_W.append(w_W[i] ** 2 * (var_W[i] + beta2))
+    a_L = []
+    b_L = []
+    for i in range(len(mu_L)):
+        a_L.append(w_L[i] * mu_L[i])
+        b_L.append(w_L[i] ** 2 * (var_L[i] + beta2))
+
+    mu_TW = 0.0
+    v_TW = 0.0
+    for i in range(len(a_W)):
+        mu_TW = mu_TW + a_W[i]
+        v_TW = v_TW + b_W[i]
+    mu_TL = 0.0
+    v_TL = 0.0
+    for i in range(len(a_L)):
+        mu_TL = mu_TL + a_L[i]
+        v_TL = v_TL + b_L[i]
+
+    # line 2: the gap d = winner - loser:  m = mu_W - mu_L + eta,  c^2 = v_W + v_L,  t = m / c
+    m = mu_TW - mu_TL + eta
+    c2 = v_TW + v_TL
+    c = math.sqrt(c2)
+    t = m / c
+
+    # ================= CUT: the winner won, so d > 0 (Nugget 2) =================
+    # line 3: m_hat = m + c * V(t),  v_hat = c^2 * (1 - W(t))
+    V, W = VW(t)
+    m_hat = m + c * V
+    v_hat = c2 * (1 - W)
+
+    # ================= UP: send only the evidence back =================
+    # line 4: divide out the prediction:  pi_e = 1/v_hat - 1/c^2,  m_e = (m_hat/v_hat - m/c^2) / pi_e
+    pi_e = 1.0 / v_hat - 1.0 / c2
+    m_e = (m_hat / v_hat - m / c2) / pi_e
+
+    # line 5: message to the winning team:  team W = d + team L
+    mu_to_TW = m_e + mu_TL - eta
+    v_to_TW = 1.0 / pi_e + v_TL
+    # line 6: message to the losing team:   team L = team W - d
+    mu_to_TL = mu_TW + eta - m_e
+    v_to_TL = 1.0 / pi_e + v_TW
+
+    # lines 7-9: for every player of both teams
+    new = {}
+    teams = [(names_W, mu_W, var_W, w_W, a_W, b_W, mu_TW, v_TW, mu_to_TW, v_to_TW),
+             (names_L, mu_L, var_L, w_L, a_L, b_L, mu_TL, v_TL, mu_to_TL, v_to_TL)]
+    for team in teams:
+        name, mu, var, w, a, b, mu_T, v_T, mu_to_T, v_to_T = team
+        new_mu = []
+        new_var = []
+        for i in range(len(mu)):
+            # line 8: take the teammates out and divide by her weight, then add her own beta^2
+            #         (mu_T - a_i is the teammates' part of the team mean)
+            mu_to_i = (mu_to_T - mu_T + a[i]) / w[i]
+            v_to_i = (v_to_T + v_T - b[i]) / w[i] ** 2 + beta2
+            # line 9: multiply into her old rating: precisions add
+            pi_i = 1.0 / var[i] + 1.0 / v_to_i
+            mu_i = (mu[i] / var[i] + mu_to_i / v_to_i) / pi_i
+            var_i = 1.0 / pi_i
+            new_mu.append(mu_i)
+            new_var.append(var_i)
+            if log is not None:
+                log.append((f"what the match says about {name}{i+1}", mu_to_i, v_to_i))
+                log.append((f"new rating {name}{i+1}", mu_i, var_i))
+        new[name] = (np.array(new_mu), np.array(new_var))
+
+    if log is not None:
+        log.insert(0, ("team " + names_W + " (winner), predicted", mu_TW, v_TW))
+        log.insert(1, ("team " + names_L + " (loser), predicted", mu_TL, v_TL))
+        log.insert(2, ("gap d, predicted", m, c2))
+        log.insert(3, ("gap d after the cut (Nugget 2)", m_hat, v_hat))
+        log.insert(4, ("news about d (prediction divided out)", m_e, 1.0 / pi_e))
+        log.insert(5, ("message to team " + names_W, mu_to_TW, v_to_TW))
+        log.insert(6, ("message to team " + names_L, mu_to_TL, v_to_TL))
+
+    return new["A"], new["B"]
+
 
 def closed_form(muA, varA, wA, muB, varB, wB, beta, h=0.0, A_won=True):
-    """Nugget 2's formulas, written for weighted teams."""
-    muA,varA,wA,muB,varB,wB = map(lambda x: np.asarray(x,float), (muA,varA,wA,muB,varB,wB))
-    b2 = beta*beta
-    mu_d = wA@muA - wB@muB + h; c2 = (wA**2)@(varA+b2) + (wB**2)@(varB+b2)
-    s = 1.0 if A_won else -1.0; c = np.sqrt(c2); V, W = VW(s*mu_d/c)
-    nA = (muA + s*wA*varA/c*V, varA*(1-wA**2*varA/c2*W))
-    nB = (muB - s*wB*varB/c*V, varB*(1-wB**2*varB/c2*W))
-    return nA, nB
+    """Nugget 2's formulas, written for weighted teams (road 2 of the verification).
+    Each player moves by  +/- w_i * sigma_i^2 / c * V(t)  and her variance shrinks by the factor
+    1 - w_i^2 * sigma_i^2 / c^2 * W(t)."""
+    beta2 = beta * beta
+    mean_A = 0.0
+    var_A = 0.0
+    for i in range(len(muA)):
+        mean_A = mean_A + wA[i] * muA[i]
+        var_A = var_A + wA[i] ** 2 * (varA[i] + beta2)
+    mean_B = 0.0
+    var_B = 0.0
+    for i in range(len(muB)):
+        mean_B = mean_B + wB[i] * muB[i]
+        var_B = var_B + wB[i] ** 2 * (varB[i] + beta2)
+    mu_d = mean_A - mean_B + h
+    c2 = var_A + var_B
+    c = math.sqrt(c2)
+    if A_won:
+        sign = 1.0
+    else:
+        sign = -1.0
+    V, W = VW(sign * mu_d / c)
+    newA_mu = []
+    newA_var = []
+    for i in range(len(muA)):
+        newA_mu.append(muA[i] + sign * wA[i] * varA[i] / c * V)
+        newA_var.append(varA[i] * (1 - wA[i] ** 2 * varA[i] / c2 * W))
+    newB_mu = []
+    newB_var = []
+    for i in range(len(muB)):
+        newB_mu.append(muB[i] - sign * wB[i] * varB[i] / c * V)
+        newB_var.append(varB[i] * (1 - wB[i] ** 2 * varB[i] / c2 * W))
+    return (np.array(newA_mu), np.array(newA_var)), (np.array(newB_mu), np.array(newB_var))
+
+
+# ---- The two checks below are written with numpy arrays on purpose: they add up millions of grid
+# ---- points or random samples, which plain Python loops would take minutes to do.
+# ---- They are checks only; the model itself (Algorithms 1 and 2) never uses them.
 
 def brute_force_grid(muA, varA, wA, muB, varB, wB, beta, h=0.0, A_won=True, n=None, half_width=7.0):
-    """Exact posterior mean/var of every skill by direct numerical integration on a grid.
+    """Exact posterior mean/var of every skill by direct numerical integration on a grid (Bayes' rule).
     The performance noise is integrated analytically: P(A wins | skills) = Phi((sum wA sA - sum wB sB + h)/sqrt(beta^2 sum w^2)).
-    Everything else is a plain sum over grid points: no Gaussian approximation anywhere."""
-    from scipy.special import ndtr
-    mus = np.r_[muA, muB]; sds = np.sqrt(np.r_[varA, varB]); ws = np.r_[wA, -np.asarray(wB,float)]
-    k = len(mus); n = n or {2: 801, 4: 61}.get(k, 41)
-    axes = [np.linspace(m-half_width*s, m+half_width*s, n) for m,s in zip(mus, sds)]
-    grids = np.meshgrid(*axes, indexing="ij", sparse=True)
-    logprior = sum(-0.5*((g-m)/s)**2 for g,m,s in zip(grids, mus, sds))
-    diff = sum(w*g for w,g in zip(ws, grids)) + h
-    lik = ndtr((1 if A_won else -1)*diff/np.sqrt(beta**2*np.sum(ws**2)))
-    wgt = np.exp(logprior - logprior.max())*lik; Z = wgt.sum()
-    means, variances = [], []
-    for g in grids:
-        m = (wgt*g).sum()/Z; means.append(m); variances.append((wgt*(g-m)**2).sum()/Z)
+    n grid values per skill over mean +/- 7 sd: 801 for 1 vs 1, 61 for 2 vs 2."""
+    mus = np.r_[muA, muB]; sds = np.sqrt(np.r_[varA, varB]); ws = np.r_[wA, -np.asarray(wB, float)]
+    k = len(mus)
+    if n is None:
+        if k == 2:
+            n = 801
+        elif k == 4:
+            n = 61
+        else:
+            n = 41
+    axes = []
+    for j in range(k):
+        axes.append(np.linspace(mus[j] - half_width * sds[j], mus[j] + half_width * sds[j], n))
+    grids = np.meshgrid(*axes, indexing="ij", sparse=True)      # every combination of grid values
+    logprior = 0.0
+    diff = h
+    for j in range(k):
+        logprior = logprior - 0.5 * ((grids[j] - mus[j]) / sds[j]) ** 2      # log of the Gaussian prior
+        diff = diff + ws[j] * grids[j]                                          # sum wA sA - sum wB sB + h
+    if A_won:
+        sign = 1.0
+    else:
+        sign = -1.0
+    lik = ndtr(sign * diff / np.sqrt(beta ** 2 * np.sum(ws ** 2)))             # P(result | skills)
+    wgt = np.exp(logprior - logprior.max()) * lik                               # prior x likelihood
+    Z = wgt.sum()
+    means = []
+    variances = []
+    for j in range(k):
+        m = (wgt * grids[j]).sum() / Z
+        means.append(m)
+        variances.append((wgt * (grids[j] - m) ** 2).sum() / Z)
     k1 = len(muA)
     return (np.array(means[:k1]), np.array(variances[:k1])), (np.array(means[k1:]), np.array(variances[k1:]))
 
+
 def monte_carlo(muA, varA, wA, muB, varB, wB, beta, h=0.0, A_won=True, N=4_000_000, seed=0):
-    """Same exact posterior, by sampling skills from the prior and weighting by P(result | skills)."""
-    from scipy.special import ndtr
+    """Same exact posterior, by sampling skills from the prior and weighting each sample by P(result | skills)."""
     rng = np.random.default_rng(seed)
-    mus = np.r_[muA, muB]; sds = np.sqrt(np.r_[varA, varB]); ws = np.r_[wA, -np.asarray(wB,float)]
-    S = mus + sds*rng.standard_normal((N, len(mus)))
-    lik = ndtr((1 if A_won else -1)*(S@ws + h)/np.sqrt(beta**2*np.sum(ws**2)))
-    Z = lik.sum(); m = (lik@S)/Z; v = (lik@(S-m)**2)/Z
+    mus = np.r_[muA, muB]; sds = np.sqrt(np.r_[varA, varB]); ws = np.r_[wA, -np.asarray(wB, float)]
+    S = mus + sds * rng.standard_normal((N, len(mus)))          # N random draws of every skill
+    if A_won:
+        sign = 1.0
+    else:
+        sign = -1.0
+    lik = ndtr(sign * (S @ ws + h) / np.sqrt(beta ** 2 * np.sum(ws ** 2)))
+    Z = lik.sum()
+    m = (lik @ S) / Z
+    v = (lik @ (S - m) ** 2) / Z
     k1 = len(muA)
     return (m[:k1], v[:k1]), (m[k1:], v[k1:])
