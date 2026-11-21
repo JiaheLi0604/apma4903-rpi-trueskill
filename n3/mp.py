@@ -24,13 +24,15 @@ def VW(t):
     return V, W
 
 
-def message_passing(muA, varA, wA, muB, varB, wB, beta, h=0.0, A_won=True, log=None):
+def message_passing(muA, varA, wA, muB, varB, wB, beta, h=0.0, A_won=True, log=None, empty_team=None):
     """Algorithm 1 (MessagePassing): one match.
     Input : for each player of team A and team B: mean mu, variance var, weight w;
             beta (performance noise); h (home term for team A: +home advantage if A is at home,
             -home advantage if B is at home, 0 at a neutral site); A_won (True or False).
     Output: (new means of A, new variances of A), (new means of B, new variances of B).
-    If `log` is a list, every message is added to it as (name, mean, variance), only for printing."""
+    If `log` is a list, every message is added to it as (name, mean, variance), only for printing.
+    empty_team = (mu_T, v_T): the team-level Gaussian used for a team with NO recorded players
+    (its first match ever, Notation slide). That team enters the prediction (lines 1-2) but has no players to update."""
 
     beta2 = beta * beta
 
@@ -69,6 +71,14 @@ def message_passing(muA, varA, wA, muB, varB, wB, beta, h=0.0, A_won=True, log=N
     for i in range(len(a_L)):
         mu_TL = mu_TL + a_L[i]
         v_TL = v_TL + b_L[i]
+
+    # a team with no recorded players: use its team-level Gaussian (mu_T, v_T); the loop below then has nobody to update
+    if len(mu_W) == 0:
+        mu_TW = empty_team[0]
+        v_TW = empty_team[1]
+    if len(mu_L) == 0:
+        mu_TL = empty_team[0]
+        v_TL = empty_team[1]
 
     # line 2: the gap d = winner - loser:  m = mu_W - mu_L + eta,  c^2 = v_W + v_L,  t = m / c
     m = mu_TW - mu_TL + eta

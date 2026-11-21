@@ -4,6 +4,10 @@ import math
 import numpy as np
 import pandas as pd
 from scipy.special import log_ndtr, ndtr
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "n3"))
+from mp import message_passing             # Algorithm 1 (n3/mp.py; in the notebook: Section 1)
 LOG_SQRT_2PI = 0.9189385332046727          # log of sqrt(2*pi)
 W_BAR = 6.0                                 # a volleyball team always has six players on the court
 
@@ -67,32 +71,12 @@ def on_court_weights(share):
     return np.array(weights)
 
 
-def match_update(mu_d, c2, idx_w, w_w, idx_l, w_l, mu, var):
-    """Algorithm 1 in closed form (the same numbers as message passing, to 1e-15): update every player of the
-    winner (idx_w, weights w_w) and the loser (idx_l, weights w_l) in place.
-    mu_d = predicted mean of (winner - loser),  c2 = its variance."""
-    c = math.sqrt(c2)
-    t = mu_d / c
-    v, w = v_w(t)
-    for k in range(len(idx_w)):                 # winners move up
-        i = idx_w[k]
-        wt = w_w[k]
-        mu[i] = mu[i] + (wt * var[i] / c) * v
-        var[i] = var[i] * (1.0 - (wt * wt * var[i] / c2) * w)
-    for k in range(len(idx_l)):                 # losers move down
-        i = idx_l[k]
-        wt = w_l[k]
-        mu[i] = mu[i] - (wt * var[i] / c) * v
-        var[i] = var[i] * (1.0 - (wt * wt * var[i] / c2) * w)
-    return t
-
-
 def run_walk_forward(D, P, level="player", new_prior="team", lineup="active", end_season=None,
                      fallback=(6.0, 1.9), return_lineups=False):
     """Algorithm 2 (SeasonScore).  Walk through every day in order.  For each day:
          (0) register players seen for the first time (Algorithm 2, line 5),
          (1) predict that day's matches from beliefs built ONLY from earlier days (lines 7-9),
-         (2) update beliefs with that day's results (line 10, Algorithm 1),
+         (2) update beliefs with that day's results (line 10, Algorithm 1: message passing),
          (3) add that day's sets played to the playing-time memory (lines 11-12).
        level      : 'player' (team = weighted sum of its players)  or  'team' (each team is one 'player')
        new_prior  : 'team'   a new player starts at her team's current weighted mean rating (final model)
@@ -257,10 +241,27 @@ def run_walk_forward(D, P, level="player", new_prior="team", lineup="active", en
             muA_out[m] = mean_a
             muB_out[m] = mean_b
             c_out[m] = math.sqrt(c2)
-            if D["A_won"][m] == 1:                          # line 10: Algorithm 1 (closed form)
-                match_update(mu_d, c2, ids_a, w_a, ids_b, w_b, mu, var)
-            else:
-                match_update(-mu_d, c2, ids_b, w_b, ids_a, w_a, mu, var)
+            # line 10: Algorithm 1 (message passing) on this match.  A team with no recorded players
+            # enters with its team-level Gaussian (fb_mu, fb_V) and has nobody to update.
+            mu_a = []
+            var_a = []
+            for i in ids_a:
+                mu_a.append(mu[i])
+                var_a.append(var[i])
+            mu_b = []
+            var_b = []
+            for i in ids_b:
+                mu_b.append(mu[i])
+                var_b.append(var[i])
+            (new_mu_a, new_var_a), (new_mu_b, new_var_b) = message_passing(
+                mu_a, var_a, w_a, mu_b, var_b, w_b, beta, h * D["Home"][m], D["A_won"][m] == 1,
+                empty_team=(fb_mu, fb_V))
+            for k in range(len(ids_a)):
+                mu[ids_a[k]] = new_mu_a[k]
+                var[ids_a[k]] = new_var_a[k]
+            for k in range(len(ids_b)):
+                mu[ids_b[k]] = new_mu_b[k]
+                var[ids_b[k]] = new_var_b[k]
 
         # ---- Algorithm 2, lines 11-12: add today's sets played, once per day
         if level == "player":

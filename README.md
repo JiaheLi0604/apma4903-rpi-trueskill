@@ -19,7 +19,7 @@ Every TrueSkill number in the talk comes from the same message-passing algorithm
 | Folder | What it does | Talk section |
 |---|---|---|
 | `notebooks/Nugget_2_TrueSkill.ipynb` | Earlier full pipeline notebook (previous model: all past players, new players at 25); kept for reference | History |
-| `work/ts_core.py` | TrueSkill engine used by the notebook and the scripts | All |
+| `work/ts_core.py` | Season engine (Algorithm 2): walks every day forward and calls Algorithm 1 (`message_passing` from `n3/mp.py`) for every match | All |
 | `n3/mp.py` | Message passing on the factor graph, the closed-form update, grid integration and Monte Carlo | Nugget 3 |
 | `n3/check.py` | Three-way verification on four test matches | Nugget 3, verification table |
 | `n3/toy.py` | The 2 vs. 2 toy match; edit the numbers at the top | Nugget 3, toy match |
