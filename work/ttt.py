@@ -21,40 +21,14 @@ belief = fwd * bwd * lik  (i.e. add the natural parameters).
 import numpy as np
 from math import sqrt
 from scipy.special import ndtr
-from ts_core import v_w, on_court_weights
+from ts_core import run_walk_forward, v_w, on_court_weights
 
 
 # ------------------------------------------------------------------ 1. lineups: identical to the online engine
 def record_lineups(D, P):
-    """Replay the online engine's playing-time memory and record, for every match, the players of each side
-    and their weights (from PAST sets only).  TTT keeps these weights fixed; only the skills are re-estimated."""
-    decay = P["decay"]
-    sets = np.zeros(D["n_players"]); team_sets = np.zeros(D["n_teams"]); seen = np.zeros(D["n_players"], bool)
-    roster = [[] for _ in range(D["n_teams"])]
-    lineups = [None] * D["n_matches"]
-
-    def expected_lineup(tid):
-        r = np.array(roster[tid], dtype=int); ts = team_sets[tid]
-        if r.size == 0 or ts <= 0: return r[:0], np.zeros(0)
-        w = np.minimum(sets[r] / ts, 1.0); keep = w > 0
-        if not keep.any(): return r[:0], np.zeros(0)
-        return r[keep], on_court_weights(w[keep])
-
-    cur = None
-    for di in D["days"]:
-        season = D["season_of_day"].get(di, cur)
-        if cur is not None and season != cur:
-            sets *= decay; team_sets *= decay
-        cur = season
-        box = D["box"].get(di, {})
-        for tid, (ids, s) in box.items():
-            new = ids[~seen[ids]]
-            if new.size: seen[new] = True; roster[tid].extend(new.tolist())
-        for i in D["m_by_day"].get(di, []):
-            lineups[i] = (expected_lineup(D["A"][i]), expected_lineup(D["B"][i]))
-        for tid, (ids, s) in box.items():
-            sets[ids] += s; team_sets[tid] += s.max()
-    return lineups
+    """For every match, the players of each side and their weights, exactly as the online engine used them
+    (past sets only, active lineup).  TTT keeps these weights fixed; only the skills are re-estimated."""
+    return run_walk_forward(D, P, return_lineups=True)["lineups"]
 
 
 # ------------------------------------------------------------------ 2. build the graph of player-time nodes

@@ -11,14 +11,14 @@ Source package: https://github.com/JeffreyRStevens/ncaavolleyballr
 
 ## Which model produced which result
 Every TrueSkill number in the talk comes from the same message-passing algorithm (Nugget 3, `n3/mp.py`; season engine `work/ts_core.py`).
-- **TrueSkill, full** (results slides, live run): the 6 vs. 6 player-level model with playing-time weights, parameters `work/P_tuned.pkl` (tuned on 2024 only, `work/tune1.py`). Results: `cmp/player_results.py`; live run: `n3/live.py`.
+- **TrueSkill, full** (results slides, live run): the 6 vs. 6 player-level model with playing-time weights. Final model (Nov 20): a team's expected lineup counts only players who have played this season (before a team's first match of a season, last season's players), and a new player starts at her team's current average rating instead of 25 (`run_walk_forward` defaults `lineup='active', new_prior='team'`; the previous version is `lineup='all', new_prior='global'`). Parameters `work/P_tuned.pkl` = (sigma0 4, tau 1, home 3, decay 0.8, rho 1), chosen by maximum likelihood with a coordinate search that loops until no setting changes (`work/tune_converge.py`, Colab section 7; 3 rounds, 94 SeasonScore runs over 62 distinct settings). Ratings run on 2022–2024; only 2024 matches are scored, each predicted before it is used; 2025 is held out for testing. The likelihood is flat near the optimum: a finer grid (`lec/grid.py`) and L-BFGS-B (`work/grad_check.py`) find slightly better 2024 scores with different settings. Results: `cmp/player_results.py` (after `cmp/rank.py`); live run: `n3/live.py`. `work/tune1.py` is an earlier fixed two-pass version for the previous model.
 - **TrueSkill, same information** (results slides): the same algorithm with one rating per team (the 1 vs. 1 case), this season's wins and losses only, no home court: `cmp/run.py`, `cmp/tune_fair.py`.
 - **RPI**: recomputed every day from this season's results, `cmp/run.py`; rankings `cmp/rank.py`.
 
 ## Files
 | Folder | What it does | Talk section |
 |---|---|---|
-| `notebooks/Nugget_2_TrueSkill.ipynb` | Full TrueSkill pipeline: data, model, walk-forward predictions, parameter tuning (Section 6), checks | Model and tuning |
+| `notebooks/Nugget_2_TrueSkill.ipynb` | Earlier full pipeline notebook (previous model: all past players, new players at 25); kept for reference | History |
 | `work/ts_core.py` | TrueSkill engine used by the notebook and the scripts | All |
 | `n3/mp.py` | Message passing on the factor graph, the closed-form update, grid integration and Monte Carlo | Nugget 3 |
 | `n3/check.py` | Three-way verification on four test matches | Nugget 3, verification table |
@@ -28,7 +28,9 @@ Every TrueSkill number in the talk comes from the same message-passing algorithm
 | `cmp/run.py`, `cmp/tune_fair.py` | Walk-forward RPI and TrueSkill predictions for 2024–2025 | Results |
 | `cmp/player_results.py` | Results with the player-level model: accuracy, log-loss, intervals, rankings, UTEP vs. North Carolina | Results |
 | `cmp/eval2.py`, `cmp/rank.py` | Accuracy, log-loss, bootstrap intervals; rank comparison | Results |
-| `lec/grid.py` | Full 540-combination tuning grid | Tuning check |
+| `work/tune_converge.py` | Maximum-likelihood tuning, coordinate search looped to convergence (Algorithm 3 on the slides); `--save` writes `P_tuned.pkl` | Nugget 3, pseudocode |
+| `work/grad_check.py` | Gradient-method check (L-BFGS-B) of the tuning | Tuning check |
+| `lec/grid.py` | Finer 540-combination grid around the chosen settings (run from `work/`) | Tuning check |
 
 ## Live demo in Colab
 Open `notebooks/demo_colab.ipynb` in Colab (no sign-in needed to view; sign in to run):

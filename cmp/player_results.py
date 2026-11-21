@@ -1,4 +1,5 @@
-"""Results with the player-level model (Nugget 3's algorithm, parameters work/P_tuned.pkl) in the 'full' column.
+"""Results with the player-level model (Nugget 3's algorithm, final model: active lineup, new players start at their
+team's average; parameters work/P_tuned.pkl) in the 'full' column.
 'Same info' stays the team-level model (only this season's wins and losses, no home court), as before.
 Run from the repository root after cmp/run.py, cmp/tune_fair.py and cmp/rank.py:  python cmp/player_results.py"""
 import sys, pickle, numpy as np, pandas as pd
@@ -37,10 +38,12 @@ for name, m in [('2025 both>=5', base), ('before Oct 15', base & (dates < np.dat
 cut = pd.Timestamp('2025-11-30')
 D2 = dict(D); D2['days'] = [di for di in D['days'] if D['date_list'][di] < cut]
 o = run_walk_forward(D2, P)
-def strength(tid):                                          # line 3 of the pseudocode: team mean = sum of w_i mu_i
+def strength(tid):                                          # team mean = sum of w_i mu_i (Algorithm 1, line 1)
     r = np.array(o['roster'][tid], dtype=int); ts = o['team_sets'][tid]
     if r.size == 0 or ts <= 0: return np.nan
     w = np.minimum(o['sets'][r] / ts, 1.0); keep = w > 0
+    act = o['last_season'][r] >= 2025 - (0 if o['team_played'][tid] else 1)   # same active lineup as the predictions
+    if (keep & act).any(): keep = keep & act
     if not keep.any(): return np.nan
     return float(on_court_weights(w[keep]) @ o['mu'][r[keep]])
 df = pickle.load(open('cmp/rank_df.pkl', 'rb')).copy()
@@ -51,7 +54,7 @@ df['tsP_rk'] = df.tsP.rank(ascending=False).astype('Int64')
 ok = df.tsP.notna()
 print('Spearman RPI vs TS full (player):', round(spearmanr(df.rpi[ok], df.tsP[ok]).correlation, 3),
       ' RPI vs TS same info:', round(spearmanr(df.rpi, df.tsS).correlation, 3))
-show = ['UTEP', 'North Carolina', 'Missouri', 'Georgia', 'Mississippi St.', 'High Point', 'Eastern Ky.', 'Xavier']
+show = ['UTEP', 'North Carolina', 'Missouri', 'Georgia', 'Mississippi St.', 'High Point', 'Eastern Ky.', 'Xavier', 'South Fla.', 'Princeton']
 print(df[df.team.isin(show)][['team', 'rpi_rk', 'tsS_rk', 'tsF_rk', 'tsP_rk']].to_string(index=False))
 top = df[ok & ((df.rpi_rk <= 64) | (df.tsP_rk <= 64))].copy(); top['gap'] = top.tsP_rk.astype(float) - top.rpi_rk
 print('RPI ranks much higher than TS full (player):'); print(top.sort_values('gap', ascending=False).head(6)[['team', 'rpi_rk', 'tsS_rk', 'tsP_rk']].to_string(index=False))
@@ -60,5 +63,7 @@ print('TS full (player) ranks much higher than RPI:'); print(top.sort_values('ga
 i = [j for j in range(len(y)) if S[j] == 2025 and {names[D['A'][j]], names[D['B'][j]]} == {'UTEP', 'North Carolina'}][0]
 unc_is_A = names[D['A'][i]] == 'North Carolina'
 for nm, p in M.items(): print(f'   P(UNC wins) {nm:22s} {p[i] if unc_is_A else 1 - p[i]:.3f}')
-print('   note: walk-forward player-level uses the data Home flag; live.py uses h = 0 (neutral site)')
+D3 = dict(D); H3 = D['Home'].copy(); H3[i] = 0; D3['Home'] = H3          # neutral site (played in Madison)
+pn = run_walk_forward(D3, P)['p'][i]; print(f'   P(UNC wins) TS full (player), neutral site h = 0: {pn if unc_is_A else 1 - pn:.3f}')
+print('   note: the data marks it a UTEP home game; live.py and the slides use h = 0 (neutral site)')
 pickle.dump(dict(player=player, rank_df=df), open('cmp/player_results.pkl', 'wb'))

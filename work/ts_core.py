@@ -82,8 +82,8 @@ def on_court_weights(share):
 
 
 # ------------------------------------------------------------------ the walk-forward engine
-def run_walk_forward(D, P, level="player", update_weights="expected", new_prior="global", end_season=None,
-                     record=False, fallback=(6.0, 1.9)):
+def run_walk_forward(D, P, level="player", update_weights="expected", new_prior="team", lineup="active",
+                     end_season=None, record=False, fallback=(6.0, 1.9), return_lineups=False):
     """Walk through every day in order.  For each day:
          (0) register players seen for the first time,
          (1) predict that day's matches from beliefs built ONLY from earlier days,
@@ -92,6 +92,13 @@ def run_walk_forward(D, P, level="player", update_weights="expected", new_prior=
        level          : 'player' (team = weighted sum of its players)  or  'team' (each team is one 'player')
        update_weights : 'expected' (same past-playing-time weights as the prediction)
                         'actual'   (today's real participation, when the box score exists)
+       new_prior      : 'team'   (a new player starts at her team's current weighted mean rating; 25 if none)  [final model]
+                        'global' (a new player starts at 25, as in TrueSkill)
+       lineup         : 'active' (only players who have played this season; before the team's first box score
+                                  of a season, the players who played last season)                          [final model]
+                        'all'    (everyone who has ever played for the team; graduates never leave)
+       Everything a prediction uses (ratings, sets, who has played this season) is updated only AFTER that
+       day's matches, so each prediction uses information from earlier days only.
        fallback       : (typical sum of weights, typical sum of squared weights) for a team with no history yet"""
     mu0, sig0, beta = P["mu0"], P["sigma0"], P["beta"]
     tau, h, decay, rho = P["tau_season"], P["home"], P["decay"], P["rho"]
@@ -101,6 +108,9 @@ def run_walk_forward(D, P, level="player", update_weights="expected", new_prior=
     mu = np.full(nU, float(mu0)); var = np.full(nU, float(sig0) ** 2); seen = np.zeros(nU, bool)
     sets = np.zeros(nU); team_sets = np.zeros(D["n_teams"])
     roster = [[] for _ in range(D["n_teams"])]; roster_np = [None] * D["n_teams"]
+    last_season = np.full(nU, -1)                          # last season in which a player had a box score (before today)
+    team_played = np.zeros(D["n_teams"], bool)             # has the team had a box score this season (before today)?
+    lineups = [None] * D["n_matches"] if return_lineups else None
     fb_mu = fallback[0] * mu0; fb_V = fallback[1] * (sig0 ** 2 + beta2)      # an all-prior team
 
     n = D["n_matches"]
@@ -121,6 +131,9 @@ def run_walk_forward(D, P, level="player", update_weights="expected", new_prior=
             return r[:0], np.zeros(0)
         w = np.minimum(sets[r] / ts, 1.0)
         keep = w > 0
+        if lineup == "active":                             # drop players who have left (graduated, transferred, ...)
+            act = last_season[r] >= cur_season - (0 if team_played[tid] else 1)
+            if (keep & act).any(): keep = keep & act
         if not keep.any():
             return r[:0], np.zeros(0)
         return r[keep], on_court_weights(w[keep])
@@ -136,7 +149,7 @@ def run_walk_forward(D, P, level="player", update_weights="expected", new_prior=
         if end_season is not None and season is not None and season > end_season:
             break
         if cur_season is not None and season != cur_season:                  # ---- new season: memory fades, uncertainty grows
-            sets *= decay; team_sets *= decay
+            sets *= decay; team_sets *= decay; team_played[:] = False
             mu[seen] = mu0 + rho * (mu[seen] - mu0)
             var[seen] += tau ** 2
         cur_season = season
@@ -150,8 +163,8 @@ def run_walk_forward(D, P, level="player", update_weights="expected", new_prior=
                 if new.any():
                     nid = ids[new]; seen[nid] = True; var[nid] = sig0 ** 2
                     start = mu0                                              # prior mean of a brand-new player
-                    if new_prior == "team":                                  # ...or: the current average of her teammates
-                        li, lw = expected_lineup(tid)
+                    if new_prior == "team":                                  # final model: her team's current weighted
+                        li, lw = expected_lineup(tid)                        # mean, from ratings before today
                         if li.size: start = float(lw @ mu[li] / lw.sum())
                     mu[nid] = start
                     roster[tid].extend(nid.tolist()); roster_np[tid] = None
@@ -164,6 +177,7 @@ def run_walk_forward(D, P, level="player", update_weights="expected", new_prior=
         for i in todays_matches:
             a, b = D["A"][i], D["B"][i]
             ia, wa = expected_lineup(a); ib, wb = expected_lineup(b)
+            if return_lineups: lineups[i] = ((ia.copy(), wa.copy()), (ib.copy(), wb.copy()))
             if tau_m2 > 0:                                                       # skill may drift a little between matches
                 var[ia] += tau_m2; var[ib] += tau_m2
             mA, VA = stats(ia, wa); mB, VB = stats(ib, wb)
@@ -194,9 +208,10 @@ def run_walk_forward(D, P, level="player", update_weights="expected", new_prior=
             for tid, (ids, s) in todays_box.items():
                 sets[ids] += s
                 team_sets[tid] += s.max()
+                last_season[ids] = cur_season; team_played[tid] = True
 
     out = dict(p=p_out, muA=muA_out, muB=muB_out, c=c_out, mu=mu, var=var, sets=sets, team_sets=team_sets,
-               roster=roster, seen=seen)
+               roster=roster, seen=seen, last_season=last_season, team_played=team_played, lineups=lineups)
     if record:
         out["hist"] = {k: np.concatenate(v) if v else np.array([]) for k, v in hist.items()}
     return out
