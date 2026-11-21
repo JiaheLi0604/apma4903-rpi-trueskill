@@ -72,7 +72,7 @@ def on_court_weights(share):
 
 
 def run_walk_forward(D, P, level="player", new_prior="team", lineup="active", end_season=None,
-                     fallback=(6.0, 1.9), return_lineups=False):
+                     fallback=(6.0, 1.9), return_lineups=False, score_season=2024):
     """Algorithm 2 (SeasonScore).  Walk through every day in order.  For each day:
          (0) register players seen for the first time (Algorithm 2, line 5),
          (1) predict that day's matches from beliefs built ONLY from earlier days (lines 7-9),
@@ -84,7 +84,9 @@ def run_walk_forward(D, P, level="player", new_prior="team", lineup="active", en
        lineup     : 'active' only players who have played this season; before the team's first box score of a
                              season, the players who played last season (final model)
                     'all'    everyone who has ever played for the team
-       Returns a dictionary; out['p'][m] = predicted probability that team A wins match m."""
+       score_season: the season whose matches are scored (2024).
+       Returns a dictionary: out['L'] = L(theta), the log-likelihood of the score_season results (Algorithm 2's output);
+       out['p'][m] = predicted probability that team A wins match m (kept for the results section)."""
     mu0 = P["mu0"]
     sig0 = P["sigma0"]
     beta = P["beta"]
@@ -100,7 +102,8 @@ def run_walk_forward(D, P, level="player", new_prior="team", lineup="active", en
     else:
         n_units = D["n_teams"]
 
-    # ---- the state the engine keeps (Algorithm 2, line 1)
+    # ---- Algorithm 2, line 1: L <- 0, and the state the engine keeps (n_i <- 0, N_T <- 0)
+    L = 0.0                                         # log-likelihood of the scored season's results
     mu = np.full(n_units, float(mu0))               # rating mean of every player
     var = np.full(n_units, float(sig0) ** 2)        # rating variance of every player
     seen = np.zeros(n_units, bool)                  # has this player appeared yet?
@@ -177,10 +180,9 @@ def run_walk_forward(D, P, level="player", new_prior="team", lineup="active", en
         # ---- Algorithm 2, lines 3-4: a new season starts
         if cur_season is not None and season != cur_season:
             for i in range(n_units):
+                mu[i] = mu0 + rho * (mu[i] - mu0)           # pull toward 25 by rho
+                var[i] = var[i] + tau ** 2                  # add tau^2
                 sets[i] = sets[i] * decay                   # n_i <- decay * n_i
-                if seen[i]:
-                    mu[i] = mu0 + rho * (mu[i] - mu0)       # pull toward 25 by rho
-                    var[i] = var[i] + tau ** 2              # add tau^2
             for team in range(D["n_teams"]):
                 team_sets[team] = team_sets[team] * decay   # N_T <- decay * N_T
                 team_played[team] = False
@@ -236,11 +238,18 @@ def run_walk_forward(D, P, level="player", new_prior="team", lineup="active", en
             mean_a, v_a = team_mean_var(ids_a, w_a)
             mean_b, v_b = team_mean_var(ids_b, w_b)
             c2 = v_a + v_b
-            mu_d = mean_a - mean_b + h * D["Home"][m]       # line 8: predicted gap (A - B), with home advantage
-            p_out[m] = ndtr(mu_d / math.sqrt(c2))           # line 9: P(A wins), scored BEFORE the update
+            c = math.sqrt(c2)
+            if D["A_won"][m] == 1:                          # y_m = +1 if A won, -1 if B won
+                y_m = 1.0
+            else:
+                y_m = -1.0
+            t_m = y_m * (mean_a - mean_b + h * D["Home"][m]) / c     # line 8: t_m = y_m (mu_A - mu_B + h s_m) / c
+            if cur_season == score_season:                  # line 9: if S(d) = 2024, L <- L + log Phi(t_m)
+                L = L + log_ndtr(t_m)                       #         (scored BEFORE y_m is used to update)
+            p_out[m] = ndtr((mean_a - mean_b + h * D["Home"][m]) / c)   # P(A wins), kept for the results section
             muA_out[m] = mean_a
             muB_out[m] = mean_b
-            c_out[m] = math.sqrt(c2)
+            c_out[m] = c
             # line 10: Algorithm 1 (message passing) on this match.  A team with no recorded players
             # enters with its team-level Gaussian (fb_mu, fb_V) and has nobody to update.
             mu_a = []
@@ -276,7 +285,7 @@ def run_walk_forward(D, P, level="player", new_prior="team", lineup="active", en
                 team_sets[team] = team_sets[team] + most        # sets_T(d) = max over players of sets_i(d)
                 team_played[team] = True
 
-    return {"p": p_out, "muA": muA_out, "muB": muB_out, "c": c_out, "mu": mu, "var": var, "sets": sets,
+    return {"L": L, "p": p_out, "muA": muA_out, "muB": muB_out, "c": c_out, "mu": mu, "var": var, "sets": sets,
             "team_sets": team_sets, "roster": roster, "seen": seen, "last_season": last_season,
             "team_played": team_played, "lineups": lineups}
 
