@@ -1,7 +1,7 @@
-"""Maximum-likelihood learning of the settings theta (Algorithm 3, CoordinateSearch), line by line as on the slide.
+"""Maximum-likelihood learning of the hyperparameters theta (Algorithm 3, CoordinateSearch), line by line as on the slide.
 Objective (Nugget 1): L(theta) = sum over the 2024 matches of log P(result | earlier results, theta),
 computed by Algorithm 2 (SeasonScore = run_walk_forward(...)["L"]); each term is log Phi(t_m) from message passing.
-Method: coordinate search on fixed grids G_k. One setting at a time, compute L for every grid value and move only on a
+Method: coordinate search on fixed grids G_k. One hyperparameter at a time, compute L for every grid value and move only on a
 STRICT increase; repeat rounds while a round raises L. The current value is always one of the tries, so the computed
 L never goes down, and the grids are finite, so the loop stops.  beta is fixed: it only sets the rating scale.
 Final model: active lineup + new players start at their team's average (ts_core defaults)."""
@@ -25,10 +25,10 @@ runs = []                            # every SeasonScore execution (one full wal
 
 def SeasonScore(theta):
     """Algorithm 2: L(theta), the log-likelihood of the 2024 results."""
-    setting = []
+    theta_values = []
     for name in grids:
-        setting.append(theta[name])
-    runs.append(tuple(setting))
+        theta_values.append(theta[name])
+    runs.append(tuple(theta_values))
     return run_walk_forward(D, theta, end_season=2024)["L"]
 
 
@@ -64,11 +64,11 @@ while L_round[r] - L_round[r - 1] > 0:              # line 2: while L(r) - L(r-1
     L_round[r] = L                                  # line 7: L(r) <- L
     print(f"round {r}: L = {L:.2f}   (log-loss {-L / n_val:.5f})  {describe(theta)}")
 
-distinct = []                                       # count the distinct settings tried
+distinct = []                                       # count the distinct choices of theta tried
 for s_ in runs:
     if s_ not in distinct:
         distinct.append(s_)
-print(f"converged after {r} rounds: {len(runs)} SeasonScore runs ({len(distinct)} distinct settings), {time.time()-t0:.0f} s")
+print(f"converged after {r} rounds: {len(runs)} SeasonScore runs ({len(distinct)} distinct choices of theta), {time.time()-t0:.0f} s")
 
 out = run_walk_forward(D, theta)
 for label, mask in (("validation 2024", val), ("test 2025", tst)):
